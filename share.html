@@ -71,7 +71,7 @@ body{font-family:"PingFang SC","Microsoft YaHei",sans-serif;
       <div class="feat"><div class="e">🎁</div><div class="t">兑换奖励</div></div>
       <div class="feat"><div class="e">📊</div><div class="t">每周统计</div></div>
     </div>
-    <a class="btn" href="index.html">打开工作台</a>
+    <a class="btn" href="index.html" id="openBtn">打开工作台</a>
     <a class="btn btn-outline" href="aimi_qrcode.png">查看二维码</a>
     <div class="qr-box">
       <img src="aimi_qrcode.png" alt="扫码打开">
@@ -90,5 +90,14 @@ body{font-family:"PingFang SC","Microsoft YaHei",sans-serif;
     <div class="foot">艾米日常计划 · 积分打卡工作台</div>
   </div>
 </div>
+<script>
+// 自动继承URL中的token参数，实现同步功能
+(function(){
+  var t = new URLSearchParams(location.search).get('t');
+  if(t){
+    document.getElementById('openBtn').href = 'index.html?t=' + t;
+  }
+})();
+</script>
 </body>
 </html>
