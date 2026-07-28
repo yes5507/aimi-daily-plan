@@ -337,10 +337,13 @@ body{
           <div class="topbar-date" id="todayDate"></div>
         </div>
       </div>
-      <div class="score-badge" onclick="goExchange()">
-        <span class="star">⭐</span>
-        <span class="score-label">累积积分</span>
-        <span class="score-num" id="topScore">0</span>
+      <div style="display:flex;align-items:center;gap:14px">
+        <span id="syncStatus" style="font-size:11px;font-weight:600;color:#999;white-space:nowrap">📡 本地模式</span>
+        <div class="score-badge" onclick="goExchange()">
+          <span class="star">⭐</span>
+          <span class="score-label">累积积分</span>
+          <span class="score-num" id="topScore">0</span>
+        </div>
       </div>
     </header>
     <main class="content" id="content"></main>
@@ -439,6 +442,19 @@ let appData = null;
 let todayData = null;
 let currentMenu = 'study';
 
+/* ========== 云端同步配置 ========== */
+// token 从 URL 参数读取，不写在代码里，避免泄露
+// 用法: index.html?t=ghp_xxxxx
+const GH_TOKEN = new URLSearchParams(location.search).get('t') || '';
+const GH_OWNER = 'yes5507';
+const GH_REPO = 'aimi-daily-plan';
+const GH_DATA_PATH = 'data.json';
+const GH_API = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_DATA_PATH}`;
+let cloudSHA = null; // 云端文件的 git sha，更新时需要
+let syncTimer = null; // 防抖定时器
+let pullTimer = null; // 拉取定时器
+let isSyncing = false; // 防止同步循环
+
 /* ========== 存储 ========== */
 function loadData(){
   try{
@@ -488,10 +504,114 @@ function newToday(d){
 
 function saveData(){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+  // 防抖上传到云端（500ms内的多次修改只上传一次）
+  scheduleCloudSync();
 }
 function saveToday(){
   todayData.earned = calcEarnedToday();
   localStorage.setItem(TODAY_KEY, JSON.stringify(todayData));
+  // 今日数据也同步到云端
+  scheduleCloudSync();
+}
+
+/* ========== 云端同步函数 ========== */
+function scheduleCloudSync(){
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(pushToCloud, 600);
+}
+
+// 上传数据到 GitHub
+async function pushToCloud(){
+  if(isSyncing) return;
+  if(!GH_TOKEN) return; // token 未配置
+  isSyncing = true;
+  setSyncStatus('syncing');
+  try{
+    const payload = {
+      appData: appData,
+      todayData: todayData,
+      history: JSON.parse(localStorage.getItem(HIST_KEY)||'[]'),
+      updatedAt: Date.now()
+    };
+    const body = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+    const params = {
+      method: 'PUT',
+      headers: {
+        'Authorization': `token ${GH_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/vnd.github+json'
+      },
+      body: JSON.stringify({
+        message: `数据更新 ${new Date().toLocaleString('zh-CN')}`,
+        content: body,
+        sha: cloudSHA || undefined
+      })
+    };
+    const resp = await fetch(GH_API, params);
+    const result = await resp.json();
+    if(resp.ok){
+      cloudSHA = result.content.sha;
+      setSyncStatus('synced');
+    }else{
+      console.warn('同步失败:', result.message);
+      setSyncStatus('error');
+    }
+  }catch(e){
+    console.warn('同步异常:', e);
+    setSyncStatus('error');
+  }
+  isSyncing = false;
+}
+
+// 从 GitHub 拉取最新数据
+async function pullFromCloud(){
+  if(!GH_TOKEN) return; // token 未配置
+  try{
+    const resp = await fetch(GH_API + '?t=' + Date.now(), {
+      headers: { 'Accept': 'application/vnd.github+json' }
+    });
+    if(!resp.ok) return;
+    const result = await resp.json();
+    cloudSHA = result.sha;
+    const decoded = decodeURIComponent(escape(atob(result.content)));
+    const cloud = JSON.parse(decoded);
+    // 如果云端更新时间比本地新，则更新本地
+    if(cloud.updatedAt && cloud.appData){
+      const localUpdate = localStorage.getItem('aimi_last_update') || 0;
+      if(cloud.updatedAt > Number(localUpdate)){
+        appData = cloud.appData;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+        if(cloud.todayData && cloud.todayData.date === dateStr()){
+          todayData = cloud.todayData;
+          localStorage.setItem(TODAY_KEY, JSON.stringify(todayData));
+        }
+        if(cloud.history){
+          localStorage.setItem(HIST_KEY, JSON.stringify(cloud.history));
+        }
+        localStorage.setItem('aimi_last_update', cloud.updatedAt);
+        // 刷新界面
+        renderNav();
+        renderContent();
+        updateTopScore();
+      }
+    }
+  }catch(e){
+    console.warn('拉取异常:', e);
+  }
+}
+
+function setSyncStatus(status){
+  const el = document.getElementById('syncStatus');
+  if(!el) return;
+  const map = {
+    syncing: {text:'🔄 同步中', color:'#f0ad4e'},
+    synced: {text:'✅ 已同步', color:'#5cb85c'},
+    error: {text:'⚠️ 同步失败', color:'#d9534f'},
+    offline: {text:'📡 本地模式', color:'#999'}
+  };
+  const s = map[status] || map.offline;
+  el.textContent = s.text;
+  el.style.color = s.color;
 }
 
 function dateStr(d=new Date()){
@@ -952,6 +1072,17 @@ function init(){
   document.getElementById('todayDate').textContent = '📅 '+todayFriendly();
   // 点击右侧主区域，自动收起左侧导航
   document.getElementById('mainArea').addEventListener('click', closeSidebar);
+  // 云端同步：加载后立即拉取，然后每10秒自动拉取
+  if(GH_TOKEN){
+    setSyncStatus('syncing');
+    pullFromCloud().then(()=>{
+      // 首次拉取后，如果有本地未同步的数据，上传
+      scheduleCloudSync();
+    });
+    pullTimer = setInterval(pullFromCloud, 10000);
+  }else{
+    setSyncStatus('offline');
+  }
 }
 init();
 
