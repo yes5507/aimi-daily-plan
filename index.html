@@ -527,13 +527,27 @@ async function pushToCloud(){
   isSyncing = true;
   setSyncStatus('syncing');
   try{
+    // 先拉取最新 SHA，避免冲突
+    const pullResp = await fetch(GH_API, {
+      headers: {
+        'Authorization': `token ${GH_TOKEN}`,
+        'Accept': 'application/vnd.github+json'
+      }
+    });
+    if(pullResp.ok){
+      const pullResult = await pullResp.json();
+      cloudSHA = pullResult.sha;
+    }
+
     const payload = {
       appData: appData,
       todayData: todayData,
       history: JSON.parse(localStorage.getItem(HIST_KEY)||'[]'),
       updatedAt: Date.now()
     };
-    const body = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+    // 安全的 base64 编码（支持中文）
+    const jsonStr = JSON.stringify(payload);
+    const body = btoa(String.fromCharCode(...new TextEncoder().encode(jsonStr)));
     const params = {
       method: 'PUT',
       headers: {
@@ -551,9 +565,15 @@ async function pushToCloud(){
     const result = await resp.json();
     if(resp.ok){
       cloudSHA = result.content.sha;
+      localStorage.setItem('aimi_last_update', payload.updatedAt);
       setSyncStatus('synced');
     }else{
       console.warn('同步失败:', result.message);
+      // 如果是 SHA 冲突，重新拉取再试一次
+      if(result.message && result.message.includes('sha')){
+        setTimeout(()=>{ isSyncing=false; pushToCloud(); }, 1000);
+        return;
+      }
       setSyncStatus('error');
     }
   }catch(e){
@@ -568,12 +588,19 @@ async function pullFromCloud(){
   if(!GH_TOKEN) return; // token 未配置
   try{
     const resp = await fetch(GH_API + '?t=' + Date.now(), {
-      headers: { 'Accept': 'application/vnd.github+json' }
+      headers: {
+        'Authorization': `token ${GH_TOKEN}`,
+        'Accept': 'application/vnd.github+json'
+      }
     });
-    if(!resp.ok) return;
+    if(!resp.ok){
+      if(resp.status === 404) return; // data.json 还不存在
+      console.warn('拉取HTTP错误:', resp.status);
+      return;
+    }
     const result = await resp.json();
     cloudSHA = result.sha;
-    const decoded = decodeURIComponent(escape(atob(result.content)));
+    const decoded = decodeURIComponent(escape(atob(result.content.replace(/\n/g,''))));
     const cloud = JSON.parse(decoded);
     // 如果云端更新时间比本地新，则更新本地
     if(cloud.updatedAt && cloud.appData){
