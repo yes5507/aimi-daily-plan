@@ -443,9 +443,25 @@ let todayData = null;
 let currentMenu = 'study';
 
 /* ========== 云端同步配置 ========== */
-// token 从 URL 参数读取，不写在代码里，避免泄露
-// 用法: index.html?t=ghp_xxxxx
-const GH_TOKEN = new URLSearchParams(location.search).get('t') || '';
+// token 读取顺序：URL参数 → hash参数 → localStorage缓存
+function readToken(){
+  // 1. 从 URL query 参数读取
+  let t = new URLSearchParams(location.search).get('t');
+  // 2. 从 hash 参数读取（微信有时会丢 query 参数）
+  if(!t && location.hash){
+    t = new URLSearchParams(location.hash.replace('#','?')).get('t');
+  }
+  // 3. 从 localStorage 读取（之前保存过）
+  if(!t){
+    t = localStorage.getItem('aimi_sync_token') || '';
+  }
+  // 4. 如果拿到了 token，保存到 localStorage 供下次使用
+  if(t){
+    localStorage.setItem('aimi_sync_token', t);
+  }
+  return t || '';
+}
+const GH_TOKEN = readToken();
 const GH_OWNER = 'yes5507';
 const GH_REPO = 'aimi-daily-plan';
 const GH_DATA_PATH = 'data.json';
@@ -574,11 +590,11 @@ async function pushToCloud(){
         setTimeout(()=>{ isSyncing=false; pushToCloud(); }, 1000);
         return;
       }
-      setSyncStatus('error');
+      setSyncStatus('error', result.message || 'HTTP '+resp.status);
     }
   }catch(e){
     console.warn('同步异常:', e);
-    setSyncStatus('error');
+    setSyncStatus('error', e.message || '网络异常');
   }
   isSyncing = false;
 }
@@ -627,13 +643,13 @@ async function pullFromCloud(){
   }
 }
 
-function setSyncStatus(status){
+function setSyncStatus(status, detail){
   const el = document.getElementById('syncStatus');
   if(!el) return;
   const map = {
     syncing: {text:'🔄 同步中', color:'#f0ad4e'},
     synced: {text:'✅ 已同步', color:'#5cb85c'},
-    error: {text:'⚠️ 同步失败', color:'#d9534f'},
+    error: {text:'⚠️ '+(detail||'同步失败'), color:'#d9534f'},
     offline: {text:'📡 本地模式', color:'#999'}
   };
   const s = map[status] || map.offline;

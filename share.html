@@ -91,11 +91,15 @@ body{font-family:"PingFang SC","Microsoft YaHei",sans-serif;
   </div>
 </div>
 <script>
-// 自动继承URL中的token参数，实现同步功能
+// 自动继承URL中的token参数，支持query和hash两种方式
 (function(){
   var t = new URLSearchParams(location.search).get('t');
+  if(!t && location.hash){
+    t = new URLSearchParams(location.hash.replace('#','?')).get('t');
+  }
   if(t){
-    document.getElementById('openBtn').href = 'index.html?t=' + t;
+    localStorage.setItem('aimi_sync_token', t);
+    document.getElementById('openBtn').href = 'index.html#t=' + t;
   }
 })();
 </script>
