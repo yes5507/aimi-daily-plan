@@ -432,6 +432,9 @@ const DEFAULT_DATA = {
       {name:'挑选一份礼物',cost:80},
     ],
   },
+  // 累积总积分（所有天数赚取积分总和 - 所有兑换消耗）
+  cumulativeScore:0,
+  cumulativeSpent:0,
 };
 
 const STORAGE_KEY = 'aimi_plan_data_v1';
@@ -479,11 +482,17 @@ function loadData(){
       appData = JSON.parse(saved);
       // 合并新字段
       mergeDefaults(appData, DEFAULT_DATA);
+      // 数据迁移：老用户没有累积积分，从历史记录中回算
+      if(appData.cumulativeScore === undefined) appData.cumulativeScore = 0;
+      if(appData.cumulativeSpent === undefined) appData.cumulativeSpent = 0;
     }else{
       appData = JSON.parse(JSON.stringify(DEFAULT_DATA));
       saveData();
     }
   }catch(e){ appData = JSON.parse(JSON.stringify(DEFAULT_DATA)); }
+  
+  // 一次性迁移：如果累积积分为0但历史有记录，从历史回算
+  migrateCumulativeScore();
   
   // 今日数据
   const today = dateStr();
@@ -494,7 +503,11 @@ function loadData(){
       if(td.date === today){
         todayData = td;
       }else{
-        // 跨天，存历史
+        // 跨天，把今天赚的积分累加到总积分
+        const earnedToday = td.earned || calcEarnedFromDone(td.done);
+        appData.cumulativeScore = (appData.cumulativeScore||0) + earnedToday;
+        saveData();
+        // 存历史
         saveHistory(td);
         todayData = newToday(today);
       }
@@ -502,6 +515,26 @@ function loadData(){
       todayData = newToday(today);
     }
   }catch(e){ todayData = newToday(today); }
+}
+
+// 迁移：从历史记录回算累积积分（仅执行一次）
+function migrateCumulativeScore(){
+  if(localStorage.getItem('aimi_migrated_v2')) return;
+  try{
+    const hist = JSON.parse(localStorage.getItem(HIST_KEY)||'[]');
+    let totalEarned = 0;
+    let totalSpent = 0;
+    hist.forEach(h=>{
+      totalEarned += (h.earned||0);
+      totalSpent += (h.spent||0);
+    });
+    appData.cumulativeScore = (appData.cumulativeScore||0) + totalEarned;
+    appData.cumulativeSpent = (appData.cumulativeSpent||0) + totalSpent;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+    localStorage.setItem('aimi_migrated_v2', '1');
+  }catch(e){
+    localStorage.setItem('aimi_migrated_v2', '1');
+  }
 }
 
 function mergeDefaults(obj, def){
@@ -681,8 +714,28 @@ function calcEarnedToday(){
   }
   return total;
 }
+
+// 根据任意 done 对象回算积分（用于历史记录迁移）
+function calcEarnedFromDone(doneObj){
+  if(!doneObj) return 0;
+  let total = 0;
+  for(const menuId in appData.items){
+    for(const g of appData.items[menuId]){
+      for(const it of g.items){
+        if(doneObj[doneKey(menuId,g.group,it.name)]){
+          total += Number(it.score)||0;
+        }
+      }
+    }
+  }
+  return total;
+}
+
+// 累积总积分 = 历史累积 + 今日赚取 - 累积兑换
 function currentScore(){
-  return calcEarnedToday() - (todayData.spent||0);
+  const cumEarned = (appData.cumulativeScore||0) + calcEarnedToday();
+  const cumSpent = appData.cumulativeSpent||0;
+  return cumEarned - cumSpent;
 }
 
 /* ========== 渲染导航 ========== */
@@ -778,6 +831,9 @@ function renderContent(){
   }
 }
 
+// 兑换页面的事件绑定（兑换按钮使用内联onclick，这里留空作占位）
+function bindExchangeEvents(){}
+
 function renderChecklist(menuId){
   const groups = appData.items[menuId] || [];
   const menu = appData.menus.find(m=>m.id===menuId);
@@ -827,6 +883,9 @@ function renderChecklist(menuId){
 
 function renderExchange(){
   const total = currentScore();
+  const earnedToday = calcEarnedToday();
+  const cumEarned = (appData.cumulativeScore||0) + earnedToday;
+  const cumSpent = appData.cumulativeSpent||0;
   const ex = appData.exchange;
   return `
     <div class="section-title"><span class="emoji">🎁</span>积分兑换</div>
@@ -834,7 +893,8 @@ function renderExchange(){
       <div class="crown">👑</div>
       <div class="label">累积总积分</div>
       <div class="num">${total}</div>
-      <div class="label">加油哦！💪</div>
+      <div class="label">累计赚取 ${cumEarned} 分 · 累计兑换 ${cumSpent} 分</div>
+      <div class="label" style="margin-top:4px">今日已赚 ${earnedToday} 分 💪</div>
     </div>
     ${renderWeeklyChart()}
     ${renderExSection('💰 换钱','money',ex.money,total)}
@@ -1040,13 +1100,16 @@ function delExchange(key, i){
 function doExchange(key, i){
   const it = appData.exchange[key][i];
   const total = currentScore();
-  if(total < it.cost){ showToast('积分不足～'); return; }
-  if(!confirm(`确认兑换「${it.name}」？消耗 ${it.cost} 积分`)) return;
+  if(total < it.cost){ showToast('累积积分不足～'); return; }
+  if(!confirm(`确认兑换「${it.name}」？消耗 ${it.cost} 累积积分（剩余 ${total - it.cost}）`)) return;
+  // 从累积积分中扣减
+  appData.cumulativeSpent = (appData.cumulativeSpent||0) + it.cost;
   todayData.spent = (todayData.spent||0) + it.cost;
+  saveData();
   saveToday();
   renderContent();
   updateTopScore();
-  showToast('🎉 兑换成功！'+it.name);
+  showToast('🎉 兑换成功！'+it.name+' 消耗 '+it.cost+' 积分');
 }
 
 /* ========== 历史 & 重置 ========== */
@@ -1071,25 +1134,30 @@ function renderHistory(){
   let arr=[];
   try{ arr = JSON.parse(localStorage.getItem(HIST_KEY)||'[]'); }catch(e){}
   // 加上今天
-  const today = {date:todayData.date, spent:todayData.spent||0, doneCount:Object.keys(todayData.done||{}).length, note:'今日(进行中)'};
+  const today = {date:todayData.date, earned:calcEarnedToday(), spent:todayData.spent||0, doneCount:Object.keys(todayData.done||{}).length, note:'今日(进行中)'};
   const list = [today, ...arr];
   const el = document.getElementById('histList');
   if(list.length===0){ el.innerHTML='<p style="color:#999;text-align:center">暂无历史记录</p>'; return; }
-  el.innerHTML = list.map(h=>`
+  // 显示累积总积分
+  const cumScore = currentScore();
+  el.innerHTML = `<div style="text-align:center;margin-bottom:14px;padding:14px;border-radius:14px;background:linear-gradient(135deg,#ffb8d1,#c89cff);color:#fff">
+    <div style="font-size:13px;opacity:.9">累积总积分</div>
+    <div style="font-size:32px;font-weight:800">${cumScore}</div>
+  </div>` + list.map(h=>`
     <div class="history-item">
       <div class="h-date">${h.date} ${h.note||''}</div>
-      <div class="h-score">打卡 ${h.doneCount||0} 项 · 消耗 ${h.spent||0} 积分</div>
+      <div class="h-score">赚取 ${h.earned||0} 分 · 打卡 ${h.doneCount||0} 项 · 消耗 ${h.spent||0} 分</div>
     </div>
   `).join('');
 }
 
 function resetToday(){
-  if(!confirm('确认重置今日打卡？（积分清零，已兑换不变）')) return;
+  if(!confirm('确认重置今日打卡？（今日打卡清零，累积积分不变）')) return;
   todayData = newToday(dateStr());
   saveToday();
   renderContent();
   updateTopScore();
-  showToast('🔄 已重置');
+  showToast('🔄 已重置今日打卡');
 }
 
 function goExchange(){
