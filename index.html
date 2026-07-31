@@ -341,7 +341,7 @@ body{
         <span id="syncStatus" style="font-size:11px;font-weight:600;color:#999;white-space:nowrap">📡 本地模式</span>
         <div class="score-badge" onclick="goExchange()">
           <span class="star">⭐</span>
-          <span class="score-label">累积积分</span>
+          <span class="score-label">今日积分</span>
           <span class="score-num" id="topScore">0</span>
         </div>
       </div>
@@ -1005,7 +1005,7 @@ function showFloatScore(el, text){
 }
 
 function updateTopScore(){
-  document.getElementById('topScore').textContent = currentScore();
+  document.getElementById('topScore').textContent = calcEarnedToday();
 }
 
 /* ========== 编辑 ========== */
