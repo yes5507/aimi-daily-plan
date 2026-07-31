@@ -655,14 +655,31 @@ async function pullFromCloud(){
     if(cloud.updatedAt && cloud.appData){
       const localUpdate = localStorage.getItem('aimi_last_update') || 0;
       if(cloud.updatedAt > Number(localUpdate)){
-        appData = cloud.appData;
+        // 智能合并：保留本地累积积分（cumulativeScore/cumulativeSpent），
+        // 只从云端拉取打卡项配置和兑换项配置
+        // 因为用户可能本地修改了兑换项名称/分数，不能被云端旧数据覆盖
+        const localCumScore = appData.cumulativeScore || 0;
+        const localCumSpent = appData.cumulativeSpent || 0;
+
+        // 合并策略：以本地数据为基准，只补充云端新增的菜单/分组/项
+        // 对于已存在的兑换项，保留本地的修改
+        appData = mergeCloudData(JSON.parse(JSON.stringify(appData)), cloud.appData);
+
+        // 累积积分取较大值，避免被旧云端数据覆盖
+        appData.cumulativeScore = Math.max(localCumScore, cloud.appData.cumulativeScore || 0);
+        appData.cumulativeSpent = Math.max(localCumSpent, cloud.appData.cumulativeSpent || 0);
+
         localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
         if(cloud.todayData && cloud.todayData.date === dateStr()){
-          todayData = cloud.todayData;
+          // 今日打卡数据也取并集，避免丢失本地打卡
+          todayData = mergeTodayData(todayData, cloud.todayData);
           localStorage.setItem(TODAY_KEY, JSON.stringify(todayData));
         }
         if(cloud.history){
-          localStorage.setItem(HIST_KEY, JSON.stringify(cloud.history));
+          // 历史记录合并去重
+          const localHist = JSON.parse(localStorage.getItem(HIST_KEY)||'[]');
+          const merged = mergeHistory(localHist, cloud.history);
+          localStorage.setItem(HIST_KEY, JSON.stringify(merged));
         }
         localStorage.setItem('aimi_last_update', cloud.updatedAt);
         // 刷新界面
@@ -674,6 +691,81 @@ async function pullFromCloud(){
   }catch(e){
     console.warn('拉取异常:', e);
   }
+}
+
+// 智能合并云端数据：保留本地修改，补充云端新增
+function mergeCloudData(local, cloud){
+  // 保留本地的 cumulativeScore/cumulativeSpent（后面单独处理）
+  // 菜单列表：以本地为准（用户可能调整了顺序、添加了菜单）
+  // 对于 menus 中已有的，保留本地；云端新增的菜单追加
+  if(cloud.menus){
+    const localIds = new Set(local.menus.map(m=>m.id));
+    cloud.menus.forEach(m=>{
+      if(!localIds.has(m.id)){
+        local.menus.push(m);
+        if(!local.items[m.id] && cloud.items[m.id]){
+          local.items[m.id] = cloud.items[m.id];
+        }
+      }
+    });
+  }
+  // 兑换项：保留本地修改（名称/分数），补充云端新增
+  if(cloud.exchange){
+    for(const key in cloud.exchange){
+      if(!local.exchange[key]){
+        local.exchange[key] = cloud.exchange[key];
+        continue;
+      }
+      // 对已存在的兑换分类，保留本地每一项的修改
+      // 但补充云端新增的项
+      const localNames = new Set(local.exchange[key].map(it=>it.name));
+      cloud.exchange[key].forEach(it=>{
+        if(!localNames.has(it.name)){
+          local.exchange[key].push(it);
+        }
+      });
+    }
+  }
+  // items 配置：保留本地修改，补充云端新增的分组和项
+  if(cloud.items){
+    for(const menuId in cloud.items){
+      if(!local.items[menuId]){
+        local.items[menuId] = cloud.items[menuId];
+        continue;
+      }
+      // 对已有菜单，保留本地的分组和项配置（用户可能改了名称/分数）
+      // 只补充云端新增的分组
+      const localGroups = new Set(local.items[menuId].map(g=>g.group));
+      cloud.items[menuId].forEach(g=>{
+        if(!localGroups.has(g.group)){
+          local.items[menuId].push(g);
+        }
+      });
+    }
+  }
+  return local;
+}
+
+// 合并今日打卡数据（取并集）
+function mergeTodayData(local, cloud){
+  if(!cloud || cloud.date !== local.date) return local;
+  // done 取并集
+  const mergedDone = {...(cloud.done||{}), ...(local.done||{})};
+  local.done = mergedDone;
+  // spent 取较大值
+  local.spent = Math.max(local.spent||0, cloud.spent||0);
+  return local;
+}
+
+// 合并历史记录（按日期去重，取较大值）
+function mergeHistory(local, cloud){
+  const map = {};
+  [...local, ...cloud].forEach(h=>{
+    if(!map[h.date] || (h.earned||0) > (map[h.date].earned||0)){
+      map[h.date] = h;
+    }
+  });
+  return Object.values(map).sort((a,b)=>b.date>a.date?1:-1);
 }
 
 function setSyncStatus(status, detail){
