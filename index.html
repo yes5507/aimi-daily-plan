@@ -923,8 +923,10 @@ function renderContent(){
   }
 }
 
-// 兑换页面的事件绑定（兑换按钮使用内联onclick，这里留空作占位）
-function bindExchangeEvents(){}
+// 兑换页面的事件绑定（兑换按钮使用内联onclick，editable需要绑定blur保存）
+function bindExchangeEvents(){
+  bindEditables();
+}
 
 function renderChecklist(menuId){
   const groups = appData.items[menuId] || [];
